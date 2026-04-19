@@ -199,12 +199,29 @@ function parseHDFCCreditCard(text) {
     if (cols.length < 6) continue;
     var txnType = cols[0];
     if (txnType !== "Domestic" && txnType !== "International") continue;
-    var dateStr = cols[2] ? cols[2].split(" ")[0] : "";
-    if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) continue;
-    var description = cols[3] ? cols[3].trim() : "";
-    var amtStr = cols[4] ? cols[4].replace(/\s/g, "").trim() : "0";
+
+    // Support both formats:
+    // Old (6-col): Domestic~|~DATE~|~DESC~|~AMT~|~Cr/Dr~|~REWARDS
+    // New (7-col): Domestic~|~NAME~|~DATE~|~DESC~|~AMT~|~Cr/Dr~|~REWARDS
+    var dateCol, descCol, amtCol, crCol;
+    var col2date = cols[2] ? cols[2].split(" ")[0] : "";
+    var col1date = cols[1] ? cols[1].split(" ")[0] : "";
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(col1date)) {
+      // Old format: date at col 1
+      dateCol = 1; descCol = 2; amtCol = 3; crCol = 4;
+    } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(col2date)) {
+      // New format: date at col 2
+      dateCol = 2; descCol = 3; amtCol = 4; crCol = 5;
+    } else {
+      continue;
+    }
+
+    var dateStr = cols[dateCol].split(" ")[0];
+    var description = cols[descCol] ? cols[descCol].trim() : "";
+    // Remove commas from amount (e.g. "5,007.00" -> "5007.00")
+    var amtStr = cols[amtCol] ? cols[amtCol].replace(/,/g, "").replace(/\s/g, "").trim() : "0";
     var amount = parseFloat(amtStr) || 0;
-    var creditFlag = cols[5] ? cols[5].trim() : "";
+    var creditFlag = cols[crCol] ? cols[crCol].trim() : "";
     if (amount === 0) continue;
     var dp = dateStr.split("/");
     var date = dp[2] + "-" + dp[1] + "-" + dp[0];
@@ -666,7 +683,7 @@ function CCDateModal(props) {
             <select value={reflectDay} onChange={function(e) { setReflectDay(parseInt(e.target.value)); }} style={{ flex: 1, ...inp }}>
               {dayOptions.map(function(d) { return <option key={d} value={d}>{d}</option>; })}
             </select>
-            <select value={reflectMonth} onChange={function(e) { setReflectMonth(parseInt(e.target.value)); setReflectDay(1); }} style={{ flex: 2, ...inp }}>
+            <select value={reflectMonth} onChange={function(e) { var newMonth = parseInt(e.target.value); var maxD = new Date(reflectYear, newMonth + 1, 0).getDate(); setReflectMonth(newMonth); setReflectDay(function(d) { return Math.min(d, maxD); }); }} style={{ flex: 2, ...inp }}>
               {MONTHS.map(function(m, i) { return <option key={m} value={i}>{m}</option>; })}
             </select>
             <select value={reflectYear} onChange={function(e) { setReflectYear(parseInt(e.target.value)); }} style={{ flex: 1, ...inp }}>
@@ -876,8 +893,11 @@ export default function App() {
         // Clamp day to valid range for the target month
         var maxDay = new Date(reflectDate.year, reflectDate.month + 1, 0).getDate();
         day = Math.min(day, maxDay);
-        var shifted = new Date(reflectDate.year, reflectDate.month, day);
-        txn.date = shifted.toISOString().split("T")[0];
+        // Build date string directly to avoid UTC timezone shift
+        var sy = reflectDate.year;
+        var sm = String(reflectDate.month + 1).padStart(2, "0");
+        var sd = String(day).padStart(2, "0");
+        txn.date = sy + "-" + sm + "-" + sd;
         txn.originalDate = t.date;
       }
       return txn;
