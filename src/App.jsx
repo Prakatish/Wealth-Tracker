@@ -506,7 +506,7 @@ function TxnModal(props) {
   var init = props.txn || { date: defDate, description: "", amount: "", type: "expense", category: "", subcategory: "", accountId: "" };
   var [form, setForm] = useState(init);
   function setF(k, v) { setForm(function(p) { return Object.assign({}, p, { [k]: v }); }); }
-  var thp = props.th || { input: "#0f0f13", border: "#2d2d3d", text: "#e2e8f0", faint: "#64748b", surface: "#1a1a24", muted: "#94a3b8" };
+  var thp = props.th || makeTheme(true);
   var is = { width: "100%", background: thp.input, border: "1px solid " + thp.border, color: thp.text, padding: "8px 10px", borderRadius: 8, fontSize: 13, boxSizing: "border-box" };
   var catKeys = Object.keys(props.categories).filter(function(c) { return form.type === "income" ? c === "Income" : c !== "Income"; });
   return (
@@ -600,7 +600,7 @@ function AccountPickerModal(props) {
           <button onClick={function() { setShowNew(true); }} style={{ width: "100%", padding: "8px", borderRadius: 8, border: "1px dashed #2d2d3d", background: "none", color: "#6366f1", cursor: "pointer", fontSize: 12, marginBottom: 12 }}>+ Add New Account</button>
         )}
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={props.onCancel} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + thp.border, background: "none", color: thp.muted, cursor: "pointer" }}>Cancel</button>
+          <button onClick={props.onCancel} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer" }}>Cancel</button>
           <button onClick={function() { if (selAcct) props.onConfirm(selAcct); }} disabled={!selAcct} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: selAcct ? "#6366f1" : "#3730a3", color: "#fff", cursor: selAcct ? "pointer" : "not-allowed", fontWeight: 600 }}>Continue →</button>
         </div>
       </div>
@@ -675,7 +675,7 @@ function CCDateModal(props) {
           </div>
         )}
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={function() { props.onConfirm(null); }} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + thp.border, background: "none", color: thp.muted, cursor: "pointer" }}>Skip</button>
+          <button onClick={function() { props.onConfirm(null); }} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer" }}>Skip</button>
           <button onClick={handleConfirm} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontWeight: 600 }}>Confirm</button>
         </div>
       </div>
@@ -686,7 +686,7 @@ function CCDateModal(props) {
 function AddAccountInline(props) {
   var [newAcctType, setNewAcctType] = useState("Savings");
   var [newAcctName, setNewAcctName] = useState("");
-  var thp = props.th || { surface: "#1a1a24", border: "#2d2d3d", text: "#e2e8f0", input: "#0f0f13" };
+  var thp = props.th || makeTheme(true);
   function add() {
     if (!newAcctName.trim()) return;
     props.onAdd({ id: "acc" + Date.now(), type: newAcctType, name: newAcctName.trim() });
@@ -701,6 +701,24 @@ function AddAccountInline(props) {
       <button onClick={add} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Add Account</button>
     </div>
   );
+}
+
+
+function makeTheme(dark) {
+  return {
+    bg:       dark ? "#0f0f13" : "#f1f5f9",
+    surface:  dark ? "#1a1a24" : "#ffffff",
+    surface2: dark ? "#1e1e2e" : "#f8fafc",
+    border:   dark ? "#2d2d3d" : "#e2e8f0",
+    text:     dark ? "#e2e8f0" : "#1e293b",
+    muted:    dark ? "#94a3b8" : "#64748b",
+    faint:    dark ? "#64748b" : "#94a3b8",
+    input:    dark ? "#0f0f13" : "#f8fafc",
+    navbg:    dark ? "#1a1a24" : "#ffffff",
+    navact:   dark ? "#6366f1" : "#6366f1",
+    danger:   dark ? "#450a0a" : "#fee2e2",
+    success:  dark ? "#052e16" : "#dcfce7",
+  };
 }
 
 export default function App() {
@@ -734,21 +752,7 @@ export default function App() {
   var [storageReady, setStorageReady] = useState(false);
   var [confirmClear, setConfirmClear] = useState(false);
   var [darkMode, setDarkMode] = useState(true);
-  // Theme colors derived from darkMode
-  var th = {
-    bg:       darkMode ? "#0f0f13" : "#f1f5f9",
-    surface:  darkMode ? "#1a1a24" : "#ffffff",
-    surface2: darkMode ? "#1e1e2e" : "#f8fafc",
-    border:   darkMode ? "#2d2d3d" : "#e2e8f0",
-    text:     darkMode ? "#e2e8f0" : "#1e293b",
-    muted:    darkMode ? "#94a3b8" : "#64748b",
-    faint:    darkMode ? "#64748b" : "#94a3b8",
-    input:    darkMode ? "#0f0f13" : "#f8fafc",
-    navbg:    darkMode ? "#1a1a24" : "#ffffff",
-    navact:   darkMode ? "#6366f1" : "#6366f1",
-    danger:   darkMode ? "#450a0a" : "#fee2e2",
-    success:  darkMode ? "#052e16" : "#dcfce7",
-  };
+  var th = makeTheme(darkMode);
   var [showAccountPicker, setShowAccountPicker] = useState(false);
   var [pendingParsedTxns, setPendingParsedTxns] = useState([]);
   var [showCCDateModal, setShowCCDateModal] = useState(false);
@@ -1298,22 +1302,27 @@ export default function App() {
                     function upd(k, v) { setParsedTxns(function(prev) { return prev.map(function(p, j) { return j === origIdx ? Object.assign({}, p, { [k]: v }) : p; }); }); }
                     return <div key={t.id} style={{ background: th.surface, border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), borderRadius: 10, padding: "10px 12px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: needsAttn?"#451a03":"#052e16", color: needsAttn?"#facc15":"#4ade80" }}>{needsAttn?"⚠ Manual":"✓ Auto"}</span>
+                        <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: needsAttn?(darkMode?"#451a03":"#fff7ed"):(darkMode?"#052e16":"#f0fdf4"), color: needsAttn?(darkMode?"#facc15":"#d97706"):(darkMode?"#4ade80":"#16a34a") }}>{needsAttn?"⚠ Manual":"✓ Auto"}</span>
                         {t.originalDate && <span style={{ fontSize: 10, color: "#f59e0b" }}>reflected from {t.originalDate}</span>}
                         <span style={{ fontSize: 12, fontWeight: 600, color: t.type==="income"?"#4ade80":"#f87171", marginLeft: "auto" }}>{t.type==="expense"?"-":""}{fmt(t.amount, sym)}</span>
                         <button onClick={function() { setParsedTxns(function(prev) { return prev.filter(function(p) { return p.id !== t.id; }); }); }} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 6, border: "1px solid #450a0a", background: "none", color: "#f87171", cursor: "pointer" }}>✕</button>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
                         <input type="date" value={t.date} onChange={function(e) { upd("date", e.target.value); }} style={{ background: th.input, border: "1px solid " + th.border, color: th.muted, padding: "3px 6px", borderRadius: 6, fontSize: 11 }} />
-                        <input type="number" value={t.amount} min="0" step="0.01" onChange={function(e) { upd("amount", parseFloat(e.target.value)||0); }} style={{ background: "#0f0f13", border: "1px solid #2d2d3d", color: t.type==="income"?"#4ade80":"#f87171", padding: "3px 6px", borderRadius: 6, fontSize: 11, width: 90 }} />
+                        <input type="number" value={t.amount} min="0" step="0.01" onChange={function(e) { upd("amount", parseFloat(e.target.value)||0); }} style={{ background: th.input, border: "1px solid " + th.border, color: t.type==="income"?(darkMode?"#4ade80":"#16a34a"):(darkMode?"#f87171":"#dc2626"), padding: "3px 6px", borderRadius: 6, fontSize: 11, width: 90 }} />
                         <span style={{ fontSize: 12, flex: 1, minWidth: 80, color: th.text, wordBreak: "break-word", overflowWrap: "anywhere" }}>{t.description}</span>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        <select value={t.category} onChange={function(e) { upd("category", e.target.value); upd("subcategory", ""); upd("autocat", "high"); }} style={{ flex: 1, minWidth: 120, background: needsAttn?"#1c1008":"#0a1a0f", border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: "#e2e8f0", padding: "4px 6px", borderRadius: 6, fontSize: 12 }}>
+                        <select value={t.category} onChange={function(e) {
+                            var newCat = e.target.value;
+                            upd("category", newCat);
+                            upd("subcategory", "");
+                            upd("autocat", "low");
+                          }} style={{ flex: 1, minWidth: 120, background: needsAttn?(darkMode?"#1c1008":"#fff7ed"):(darkMode?"#0a1a0f":"#f0fdf4"), border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: th.text, padding: "4px 6px", borderRadius: 6, fontSize: 12 }}>
                           <option value="">Category...</option>
                           {Object.keys(categories).filter(function(c) { return t.type==="income"?c==="Income":c!=="Income"; }).map(function(c) { return <option key={c} value={c}>{c}</option>; })}
                         </select>
-                        <select value={t.subcategory||""} onChange={function(e) { upd("subcategory", e.target.value); }} disabled={!t.category} style={{ flex: 1, minWidth: 100, background: needsAttn?"#1c1008":"#0a1a0f", border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: t.category?"#e2e8f0":"#475569", padding: "4px 6px", borderRadius: 6, fontSize: 12, opacity: t.category?1:0.5, cursor: t.category?"pointer":"not-allowed" }}>
+                        <select value={t.subcategory||""} onChange={function(e) { upd("subcategory", e.target.value); upd("autocat", "high"); }} disabled={!t.category} style={{ flex: 1, minWidth: 100, background: t.category?(needsAttn?(darkMode?"#1c1008":"#fff7ed"):(darkMode?"#0a1a0f":"#f0fdf4")):th.input, border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: t.category?th.text:th.faint, padding: "4px 6px", borderRadius: 6, fontSize: 12, opacity: t.category?1:0.45, cursor: t.category?"pointer":"not-allowed" }}>
                           <option value="">Subcategory...</option>
                           {(categories[t.category]||[]).map(function(s) { return <option key={s} value={s}>{s}</option>; })}
                         </select>
