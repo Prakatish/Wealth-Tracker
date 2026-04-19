@@ -49,7 +49,7 @@ var LOCAL_RULES = [
   { kw: ["SNACKS","SNACK","PANIPURI","POPCORN","CHAI","TEA","BAKERY","JUICE","ROSEMILK","BHEL","PAAN","KOOZH","DOSA","LEMON SODA","COCONUT","BEEDA"], cat: "Leisure", sub: "Snacks" },
   { kw: ["BREAKFAST","BF","LUNCH","DINNER","FOOD","BIRYANI","CATERER","SWEETS","CHICKS","RESTAURANT","CAFE","KFC","DISTRICT DINING","THEOS","OM SWEETS","MYSURPA"], cat: "Leisure", sub: "Food" },
   { kw: ["COFFEE","BREW","REFRESHMENT"], cat: "Leisure", sub: "Refreshments" },
-  { kw: ["METRO","AUTO","CAB","UBER","OLA","RAPIDO","BUS","SETC","NCMC"], cat: "Office", sub: "Travel" },
+  { kw: ["METRO","AUTO","CAB","UBER","OLA","RAPIDO","BUS","SETC","NCMC"], cat: "Leisure", sub: "Travel" },
   { kw: ["FLIGHT","GOIBIBO","MAKEMYTRIP","INDIGO","AIRINDIA","SPICEJET","CLEARTRIP"], cat: "Flight Ticket", sub: "Domestic" },
   { kw: ["PETROL","DIESEL","FUEL"], cat: "Office", sub: "Travel" },
   { kw: ["HAIRCUT","SALON","SPA","SOIS BELLE"], cat: "Personal Care", sub: "Haircut" },
@@ -307,6 +307,74 @@ function parseIndianBank(text) {
   return txns;
 }
 
+function parseAxisBank(text) {
+  // Axis Bank CSV: Tran Date,CHQNO,PARTICULARS,DR,CR,BAL,SOL
+  // Date format: DD-MM-YYYY
+  var lines = text.split("\n");
+  var txns = [];
+  var headerIdx = -1;
+
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf("Tran Date") > -1 && lines[i].indexOf("PARTICULARS") > -1) {
+      headerIdx = i;
+      break;
+    }
+  }
+  if (headerIdx === -1) return [];
+
+  for (var r = headerIdx + 1; r < lines.length; r++) {
+    var line = lines[r].trim();
+    if (!line) continue;
+
+    // Split by comma but respect quoted fields
+    var cols = [];
+    var cur = "", inQ = false;
+    for (var c = 0; c < line.length; c++) {
+      if (line[c] === '"') { inQ = !inQ; }
+      else if (line[c] === ',' && !inQ) { cols.push(cur.trim()); cur = ""; }
+      else { cur += line[c]; }
+    }
+    cols.push(cur.trim());
+
+    if (cols.length < 5) continue;
+
+    // Date: DD-MM-YYYY
+    var dateStr = cols[0].trim();
+    var dm = dateStr.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (!dm) continue;
+    var date = dm[3] + "-" + dm[2] + "-" + dm[1];
+
+    var particulars = cols[2] ? cols[2].trim() : "";
+    if (!particulars) continue;
+
+    var drStr = cols[3] ? cols[3].replace(/,/g, "").trim() : "";
+    var crStr = cols[4] ? cols[4].replace(/,/g, "").trim() : "";
+    var debit = parseFloat(drStr) || 0;
+    var credit = parseFloat(crStr) || 0;
+    if (debit === 0 && credit === 0) continue;
+
+    // Extract description from PARTICULARS
+    // UPI format: UPI/P2M/refnum/MERCHANT NAME/remarks/BANK
+    // NEFT format: NEFT/refnum/NAME/BANK/NAME
+    var desc = particulars;
+    var upiMatch = particulars.match(/^UPI\/P2[MA]\/\d+\/([^\/]+)\/([^\/]*)\//i);
+    if (upiMatch) {
+      var merchant = upiMatch[1].trim();
+      var remarks = upiMatch[2].trim();
+      desc = remarks && remarks.length > 1 && remarks !== "NO REM" && remarks !== "Paid v" && remarks !== "UPI"
+        ? merchant + " | " + remarks
+        : merchant;
+    } else {
+      var neftMatch = particulars.match(/^NEFT\/[^\/]+\/([^\/]+)\//i);
+      if (neftMatch) desc = neftMatch[1].trim();
+    }
+    desc = desc.substring(0, 80);
+
+    txns.push({ date: date, description: desc, amount: debit > 0 ? debit : credit, type: debit > 0 ? "expense" : "income" });
+  }
+  return txns;
+}
+
 function detectAndParseLocally(content) {
   // 1. HDFC Credit Card (tilde delimited)
   if (content.indexOf("~|~") > -1) {
@@ -322,7 +390,12 @@ function detectAndParseLocally(content) {
       break;
     }
   }
-  // 3. Indian Bank fixed-width statement
+  // 3. Axis Bank CSV (Tran Date,CHQNO,PARTICULARS,DR,CR,BAL,SOL)
+  if (content.indexOf("Tran Date") > -1 && content.indexOf("PARTICULARS") > -1 && content.indexOf("UTIB") > -1) {
+    var axis = parseAxisBank(content);
+    if (axis.length > 0) return { txns: axis, label: "Axis Bank: " + axis.length + " transactions" };
+  }
+  // 4. Indian Bank fixed-width statement
   if (content.indexOf("ACCOUNT STATEMENT") > -1 || content.indexOf("ACCOUNT ACTIVITY") > -1 ||
       content.indexOf("IDIB") > -1 || /\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}/.test(content)) {
     var ib = parseIndianBank(content);
@@ -433,32 +506,33 @@ function TxnModal(props) {
   var init = props.txn || { date: defDate, description: "", amount: "", type: "expense", category: "", subcategory: "", accountId: "" };
   var [form, setForm] = useState(init);
   function setF(k, v) { setForm(function(p) { return Object.assign({}, p, { [k]: v }); }); }
-  var is = { width: "100%", background: "#0f0f13", border: "1px solid #2d2d3d", color: "#e2e8f0", padding: "8px 10px", borderRadius: 8, fontSize: 13, boxSizing: "border-box" };
+  var thp = props.th || { input: "#0f0f13", border: "#2d2d3d", text: "#e2e8f0", faint: "#64748b", surface: "#1a1a24", muted: "#94a3b8" };
+  var is = { width: "100%", background: thp.input, border: "1px solid " + thp.border, color: thp.text, padding: "8px 10px", borderRadius: 8, fontSize: 13, boxSizing: "border-box" };
   var catKeys = Object.keys(props.categories).filter(function(c) { return form.type === "income" ? c === "Income" : c !== "Income"; });
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: "1rem" }}>
-      <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 16, padding: "1.25rem", width: "100%", maxWidth: 400 }}>
-        <h3 style={{ margin: "0 0 1rem", fontSize: 15, fontWeight: 700 }}>{props.txn ? "Edit" : "Add"} Transaction</h3>
+      <div style={{ background: thp.surface, border: "1px solid " + thp.border, borderRadius: 16, padding: "1.25rem", width: "100%", maxWidth: 400 }}>
+        <h3 style={{ margin: "0 0 1rem", fontSize: 15, fontWeight: 700, color: thp.text }}>{props.txn ? "Edit" : "Add"} Transaction</h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Date</label><input type="date" value={form.date} onChange={function(e) { setF("date", e.target.value); }} style={is} /></div>
-          <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Description</label><input type="text" value={form.description} onChange={function(e) { setF("description", e.target.value); }} style={is} /></div>
-          <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Amount</label><input type="number" value={form.amount} onChange={function(e) { setF("amount", e.target.value); }} style={is} /></div>
-          <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Type</label>
+          <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Date</label><input type="date" value={form.date} onChange={function(e) { setF("date", e.target.value); }} style={is} /></div>
+          <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Description</label><input type="text" value={form.description} onChange={function(e) { setF("description", e.target.value); }} style={is} /></div>
+          <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Amount</label><input type="number" value={form.amount} onChange={function(e) { setF("amount", e.target.value); }} style={is} /></div>
+          <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Type</label>
             <select value={form.type} onChange={function(e) { setF("type", e.target.value); }} style={is}><option value="expense">Expense</option><option value="income">Income</option></select>
           </div>
-          <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Category</label>
+          <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Category</label>
             <select value={form.category} onChange={function(e) { setF("category", e.target.value); }} style={is}>
               <option value="">Select category</option>
               {catKeys.map(function(c) { return <option key={c} value={c}>{c}</option>; })}
             </select>
           </div>
-          {form.category && <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Subcategory</label>
+          {form.category && <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Subcategory</label>
             <select value={form.subcategory || ""} onChange={function(e) { setF("subcategory", e.target.value); }} style={is}>
               <option value="">Select subcategory</option>
               {(props.categories[form.category] || []).map(function(s) { return <option key={s} value={s}>{s}</option>; })}
             </select>
           </div>}
-          <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 3 }}>Account</label>
+          <div><label style={{ display: "block", fontSize: 12, color: thp.faint, marginBottom: 3 }}>Account</label>
             <select value={form.accountId || ""} onChange={function(e) { setF("accountId", e.target.value); }} style={is}>
               <option value="">Select account</option>
               {(props.accounts || []).map(function(a) { return <option key={a.id} value={a.id}>{a.type} — {a.name}</option>; })}
@@ -466,7 +540,7 @@ function TxnModal(props) {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: "1rem" }}>
-          <button onClick={props.onClose} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer" }}>Cancel</button>
+          <button onClick={props.onClose} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + thp.border, background: "none", color: thp.muted, cursor: "pointer" }}>Cancel</button>
           <button onClick={function() { if (form.description && form.amount) props.onSave(Object.assign({}, form, { amount: parseFloat(form.amount) })); }} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontWeight: 600 }}>Save</button>
         </div>
       </div>
@@ -526,7 +600,7 @@ function AccountPickerModal(props) {
           <button onClick={function() { setShowNew(true); }} style={{ width: "100%", padding: "8px", borderRadius: 8, border: "1px dashed #2d2d3d", background: "none", color: "#6366f1", cursor: "pointer", fontSize: 12, marginBottom: 12 }}>+ Add New Account</button>
         )}
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={props.onCancel} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer" }}>Cancel</button>
+          <button onClick={props.onCancel} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + thp.border, background: "none", color: thp.muted, cursor: "pointer" }}>Cancel</button>
           <button onClick={function() { if (selAcct) props.onConfirm(selAcct); }} disabled={!selAcct} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: selAcct ? "#6366f1" : "#3730a3", color: "#fff", cursor: selAcct ? "pointer" : "not-allowed", fontWeight: 600 }}>Continue →</button>
         </div>
       </div>
@@ -601,7 +675,7 @@ function CCDateModal(props) {
           </div>
         )}
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={function() { props.onConfirm(null); }} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer" }}>Skip</button>
+          <button onClick={function() { props.onConfirm(null); }} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + thp.border, background: "none", color: thp.muted, cursor: "pointer" }}>Skip</button>
           <button onClick={handleConfirm} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontWeight: 600 }}>Confirm</button>
         </div>
       </div>
@@ -612,6 +686,7 @@ function CCDateModal(props) {
 function AddAccountInline(props) {
   var [newAcctType, setNewAcctType] = useState("Savings");
   var [newAcctName, setNewAcctName] = useState("");
+  var thp = props.th || { surface: "#1a1a24", border: "#2d2d3d", text: "#e2e8f0", input: "#0f0f13" };
   function add() {
     if (!newAcctName.trim()) return;
     props.onAdd({ id: "acc" + Date.now(), type: newAcctType, name: newAcctName.trim() });
@@ -619,10 +694,10 @@ function AddAccountInline(props) {
   }
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      <select value={newAcctType} onChange={function(e) { setNewAcctType(e.target.value); }} style={{ background: "#1a1a24", border: "1px solid #2d2d3d", color: "#e2e8f0", padding: "8px 12px", borderRadius: 8, fontSize: 13 }}>
+      <select value={newAcctType} onChange={function(e) { setNewAcctType(e.target.value); }} style={{ background: thp.surface, border: "1px solid " + thp.border, color: thp.text, padding: "8px 12px", borderRadius: 8, fontSize: 13 }}>
         {ACCOUNT_TYPES.map(function(t) { return <option key={t} value={t}>{t}</option>; })}
       </select>
-      <input placeholder="Account name (e.g. HDFC Savings)" value={newAcctName} onChange={function(e) { setNewAcctName(e.target.value); }} onKeyDown={function(e) { if (e.key === "Enter") add(); }} style={{ background: "#1a1a24", border: "1px solid #2d2d3d", color: "#e2e8f0", padding: "8px 12px", borderRadius: 8, fontSize: 13, flex: 1, minWidth: 180 }} />
+      <input placeholder="Account name (e.g. HDFC Savings)" value={newAcctName} onChange={function(e) { setNewAcctName(e.target.value); }} onKeyDown={function(e) { if (e.key === "Enter") add(); }} style={{ background: thp.input, border: "1px solid " + thp.border, color: thp.text, padding: "8px 12px", borderRadius: 8, fontSize: 13, flex: 1, minWidth: 180 }} />
       <button onClick={add} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Add Account</button>
     </div>
   );
@@ -658,6 +733,22 @@ export default function App() {
   var [drillSavCat, setDrillSavCat] = useState(null);
   var [storageReady, setStorageReady] = useState(false);
   var [confirmClear, setConfirmClear] = useState(false);
+  var [darkMode, setDarkMode] = useState(true);
+  // Theme colors derived from darkMode
+  var th = {
+    bg:       darkMode ? "#0f0f13" : "#f1f5f9",
+    surface:  darkMode ? "#1a1a24" : "#ffffff",
+    surface2: darkMode ? "#1e1e2e" : "#f8fafc",
+    border:   darkMode ? "#2d2d3d" : "#e2e8f0",
+    text:     darkMode ? "#e2e8f0" : "#1e293b",
+    muted:    darkMode ? "#94a3b8" : "#64748b",
+    faint:    darkMode ? "#64748b" : "#94a3b8",
+    input:    darkMode ? "#0f0f13" : "#f8fafc",
+    navbg:    darkMode ? "#1a1a24" : "#ffffff",
+    navact:   darkMode ? "#6366f1" : "#6366f1",
+    danger:   darkMode ? "#450a0a" : "#fee2e2",
+    success:  darkMode ? "#052e16" : "#dcfce7",
+  };
   var [showAccountPicker, setShowAccountPicker] = useState(false);
   var [pendingParsedTxns, setPendingParsedTxns] = useState([]);
   var [showCCDateModal, setShowCCDateModal] = useState(false);
@@ -688,6 +779,7 @@ export default function App() {
         if (s.currency) { var c = CURRENCIES.find(function(x) { return x.code === s.currency; }); if (c) setCurrency(c); }
         if (s.selMonth !== undefined) setSelMonth(s.selMonth);
         if (s.selYear) setSelYear(s.selYear);
+        if (s.darkMode !== undefined) setDarkMode(s.darkMode);
       }
     } catch(e) {}
     setStorageReady(true);
@@ -707,11 +799,14 @@ export default function App() {
   }, [transactions, storageReady]);
   useEffect(function() { if (storageReady) store.set("wt:cat", JSON.stringify(categories)); }, [categories, storageReady]);
   useEffect(function() { if (storageReady) store.set("wt:accts", JSON.stringify(accounts)); }, [accounts, storageReady]);
-  useEffect(function() { if (storageReady) store.set("wt:cfg", JSON.stringify({ cycleStart, cycleEnd, currency: currency.code, selMonth, selYear })); }, [cycleStart, cycleEnd, currency, selMonth, selYear, storageReady]);
+  useEffect(function() { if (storageReady) store.set("wt:cfg", JSON.stringify({ cycleStart, cycleEnd, currency: currency.code, selMonth, selYear, darkMode })); }, [cycleStart, cycleEnd, currency, selMonth, selYear, darkMode, storageReady]);
 
   function filterToCycle(txns, month, year) {
     var s = new Date(year, month, cycleStart);
-    var e = cycleEnd < cycleStart ? new Date(year, month + 1, cycleEnd) : new Date(year, month, cycleEnd);
+    // Use end of the cycle end day (23:59:59) so the end date is fully inclusive
+    var e = cycleEnd < cycleStart
+      ? new Date(year, month + 1, cycleEnd, 23, 59, 59)
+      : new Date(year, month, cycleEnd, 23, 59, 59);
     return txns.filter(function(t) { var d = new Date(t.date); return d >= s && d <= e; });
   }
 
@@ -967,32 +1062,35 @@ export default function App() {
   var autoCatCount = parsedTxns.filter(function(t) { return t.category && t.autocat === "high"; }).length;
 
   if (!storageReady) return (
-    <div style={{ minHeight: "100vh", background: "#0f0f13", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+    <div style={{ minHeight: "100vh", background: th.bg, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
       <div style={{ width: 36, height: 36, borderRadius: 8, background: "linear-gradient(135deg,#6366f1,#06b6d4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>₿</div>
       <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>Loading your data...</p>
     </div>
   );
 
   var wfd = wfData(), maxV = (income || 1000) * 1.1;
-  var is = { width: "100%", background: "#0f0f13", border: "1px solid #2d2d3d", color: "#e2e8f0", padding: "8px 10px", borderRadius: 8, fontSize: 13, boxSizing: "border-box" };
+  var is = { width: "100%", background: th.input, border: "1px solid " + th.border, color: th.text, padding: "8px 10px", borderRadius: 8, fontSize: 13, boxSizing: "border-box" };
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0f0f13", color: "#e2e8f0", fontFamily: "system-ui,sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: th.bg, color: th.text, fontFamily: "system-ui,sans-serif", transition: "background 0.2s, color 0.2s" }}>
       <style>{".gmob{display:none}.gdesk{display:flex}@media(max-width:640px){.g3{grid-template-columns:1fr!important}.g2{grid-template-columns:1fr!important}.gdesk{display:none!important}.gmob{display:block!important}.otx td,.otx th{padding:5px 4px!important;font-size:11px!important}}"}</style>
 
-      <div style={{ background: "#1a1a24", borderBottom: "1px solid #2d2d3d", padding: "0 1rem", position: "sticky", top: 0, zIndex: 50 }}>
+      <div style={{ background: th.navbg, borderBottom: "1px solid " + th.border, padding: "0 1rem", position: "sticky", top: 0, zIndex: 50 }}>
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 52 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 30, height: 30, borderRadius: 7, background: "linear-gradient(135deg,#6366f1,#06b6d4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>₿</div>
             <span style={{ fontWeight: 700, fontSize: 16, background: "linear-gradient(135deg,#6366f1,#06b6d4)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>WealthTrack</span>
           </div>
-          <nav className="gdesk" style={{ gap: 2 }}>
-            {TABS.map(function(t) { return <button key={t} onClick={function() { setTab(t); }} style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: tab === t ? "#6366f1" : "transparent", color: tab === t ? "#fff" : "#94a3b8", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>{t}</button>; })}
+          <nav className="gdesk" style={{ gap: 2, alignItems: "center" }}>
+            {TABS.map(function(t) { return <button key={t} onClick={function() { setTab(t); }} style={{ padding: "5px 12px", borderRadius: 8, border: "none", background: tab === t ? "#6366f1" : "transparent", color: tab === t ? "#fff" : th.muted, cursor: "pointer", fontSize: 13, fontWeight: 500 }}>{t}</button>; })}
           </nav>
-          <button className="gmob" onClick={function() { setMobileMenu(function(p) { return !p; }); }} style={{ background: "none", border: "1px solid #2d2d3d", color: "#94a3b8", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 18 }}>☰</button>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button onClick={function() { setDarkMode(function(d) { return !d; }); }} style={{ background: "none", border: "1px solid " + th.border, color: th.muted, borderRadius: 8, padding: "5px 9px", cursor: "pointer", fontSize: 15 }}>{darkMode ? "☀️" : "🌙"}</button>
+            <button className="gmob" onClick={function() { setMobileMenu(function(p) { return !p; }); }} style={{ background: "none", border: "1px solid " + th.border, color: th.muted, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 18 }}>☰</button>
+          </div>
         </div>
-        {mobileMenu && <div style={{ borderTop: "1px solid #2d2d3d", padding: "8px 0" }}>
-          {TABS.map(function(t) { return <button key={t} onClick={function() { navTo(t); }} style={{ display: "block", width: "100%", padding: "10px 1rem", background: tab === t ? "#312e81" : "none", border: "none", color: tab === t ? "#c7d2fe" : "#94a3b8", cursor: "pointer", fontSize: 14, textAlign: "left" }}>{t}</button>; })}
+        {mobileMenu && <div style={{ borderTop: "1px solid " + th.border, padding: "8px 0", background: th.navbg }}>
+          {TABS.map(function(t) { return <button key={t} onClick={function() { navTo(t); }} style={{ display: "block", width: "100%", padding: "10px 1rem", background: tab === t ? "#312e81" : "none", border: "none", color: tab === t ? "#c7d2fe" : th.muted, cursor: "pointer", fontSize: 14, textAlign: "left" }}>{t}</button>; })}
         </div>}
       </div>
 
@@ -1001,75 +1099,75 @@ export default function App() {
         {tab === "Dashboard" && (
           <div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", flexWrap: "wrap", gap: 8 }}>
-              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Overview</h2>
+              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: th.text }}>Overview</h2>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 10, padding: "5px 8px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, background: th.surface, border: "1px solid " + th.border, borderRadius: 10, padding: "5px 8px" }}>
                   <button onClick={prevMonth} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 16, padding: "0 2px" }}>‹</button>
-                  <select value={selMonth} onChange={function(e) { setSelMonth(Number(e.target.value)); setDrillCat(null); }} style={{ background: "transparent", border: "none", color: "#e2e8f0", fontSize: 13, fontWeight: 600, cursor: "pointer", outline: "none" }}>
-                    {MONTHS.map(function(m, i) { return <option key={m} value={i} style={{ background: "#1a1a24" }}>{m.slice(0,3)}</option>; })}
+                  <select value={selMonth} onChange={function(e) { setSelMonth(Number(e.target.value)); setDrillCat(null); }} style={{ background: "transparent", border: "none", color: th.text, fontSize: 13, fontWeight: 600, cursor: "pointer", outline: "none" }}>
+                    {MONTHS.map(function(m, i) { return <option key={m} value={i} style={{ background: th.surface, color: th.text }}>{m.slice(0,3)}</option>; })}
                   </select>
-                  <select value={selYear} onChange={function(e) { setSelYear(Number(e.target.value)); setDrillCat(null); }} style={{ background: "transparent", border: "none", color: "#a5b4fc", fontSize: 13, fontWeight: 600, cursor: "pointer", outline: "none" }}>
-                    {yearOptions.map(function(y) { return <option key={y} value={y} style={{ background: "#1a1a24" }}>{y}</option>; })}
+                  <select value={selYear} onChange={function(e) { setSelYear(Number(e.target.value)); setDrillCat(null); }} style={{ background: "transparent", border: "none", color: darkMode ? "#a5b4fc" : "#6366f1", fontSize: 13, fontWeight: 600, cursor: "pointer", outline: "none" }}>
+                    {yearOptions.map(function(y) { return <option key={y} value={y} style={{ background: th.surface, color: th.text }}>{y}</option>; })}
                   </select>
                   <button onClick={nextMonth} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 16, padding: "0 2px" }}>›</button>
                 </div>
-                <button onClick={function() { exportData("csv"); }} style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid #2d2d3d", background: "#1a1a24", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}>↓ CSV</button>
-                <button onClick={function() { exportData("txt"); }} style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid #2d2d3d", background: "#1a1a24", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}>↓ Report</button>
+                <button onClick={function() { exportData("csv"); }} style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid " + th.border, background: th.surface, color: th.muted, cursor: "pointer", fontSize: 12 }}>↓ CSV</button>
+                <button onClick={function() { exportData("txt"); }} style={{ padding: "5px 10px", borderRadius: 8, border: "1px solid " + th.border, background: th.surface, color: th.muted, cursor: "pointer", fontSize: 12 }}>↓ Report</button>
               </div>
             </div>
 
             <div className="g3" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: "1rem" }}>
               {[["Income", income, "#10b981"], ["Expenses", expense, "#ef4444"], ["Net Savings", savings, savings >= 0 ? "#6366f1" : "#ef4444"]].map(function(item) {
-                return <div key={item[0]} style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "12px 14px" }}>
-                  <p style={{ margin: "0 0 4px", fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 1 }}>{item[0]}</p>
-                  <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: item[2] }}>{fmt(item[1], sym)}</p>
-                  {item[0] === "Net Savings" && income > 0 && <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b" }}>{Math.round((savings/income)*100)}% savings rate</p>}
+                return <div key={item[0]} style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px" }}>
+                  <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>{item[0]}</p>
+                  <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: th.text, color: item[2] }}>{fmt(item[1], sym)}</p>
+                  {item[0] === "Net Savings" && income > 0 && <p style={{ margin: "3px 0 0", fontSize: 11, color: th.faint }}>{Math.round((savings/income)*100)}% savings rate</p>}
                 </div>;
               })}
             </div>
 
             <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-              <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "1rem" }}>
+              <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "1rem" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                  <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{drillCat ? drillCat : "Expenses"}</h3>
+                  <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: th.text }}>{drillCat ? drillCat : "Expenses"}</h3>
                   {drillCat && <button onClick={function() { setDrillCat(null); }} style={{ fontSize: 12, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}>← Back</button>}
                 </div>
                 {expPieData.length > 0 ? <div>
                   <ResponsiveContainer width="100%" height={180}><PieChart><Pie data={expPieData} cx="50%" cy="50%" outerRadius={70} dataKey="value" onClick={function(d) { if (!drillCat) setDrillCat(d.name); }}>{expPieData.map(function(_, i) { return <Cell key={i} fill={COLORS[i % COLORS.length]} cursor={drillCat ? "default" : "pointer"} />; })}</Pie><Tooltip content={function(p) { return <CustomPieTooltip active={p.active} payload={p.payload} total={expPieTotal} sym={sym} />; }} /></PieChart></ResponsiveContainer>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{expPieData.map(function(d, i) { return <span key={d.name} onClick={function() { if (!drillCat) setDrillCat(d.name); }} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, color: "#94a3b8", cursor: drillCat ? "default" : "pointer" }}><span style={{ width: 7, height: 7, borderRadius: 1, background: COLORS[i % COLORS.length], display: "inline-block" }}></span>{d.name} {expPieTotal > 0 ? Math.round((d.value/expPieTotal)*100) : 0}%</span>; })}</div>
-                  {!drillCat && <p style={{ fontSize: 10, color: "#475569", margin: "6px 0 0" }}>Click slice to drill down</p>}
-                </div> : <p style={{ color: "#475569", fontSize: 13, textAlign: "center", marginTop: 40 }}>No expense data</p>}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{expPieData.map(function(d, i) { return <span key={d.name} onClick={function() { if (!drillCat) setDrillCat(d.name); }} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, color: th.muted, cursor: drillCat ? "default" : "pointer" }}><span style={{ width: 7, height: 7, borderRadius: 1, background: COLORS[i % COLORS.length], display: "inline-block" }}></span>{d.name} {expPieTotal > 0 ? Math.round((d.value/expPieTotal)*100) : 0}%</span>; })}</div>
+                  {!drillCat && <p style={{ fontSize: 10, color: th.faint, margin: "6px 0 0" }}>Click slice to drill down</p>}
+                </div> : <p style={{ color: th.faint, fontSize: 13, textAlign: "center", marginTop: 40 }}>No expense data</p>}
               </div>
-              <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "1rem" }}>
+              <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "1rem" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                  <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{drillSavCat ? drillSavCat : "Savings"}</h3>
+                  <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: th.text }}>{drillSavCat ? drillSavCat : "Savings"}</h3>
                   {drillSavCat && <button onClick={function() { setDrillSavCat(null); }} style={{ fontSize: 12, color: "#6366f1", background: "none", border: "none", cursor: "pointer" }}>← Back</button>}
                 </div>
                 {savPieData.length > 0 ? <div>
                   <ResponsiveContainer width="100%" height={180}><PieChart><Pie data={savPieData} cx="50%" cy="50%" outerRadius={70} dataKey="value" onClick={function(d) { if (!drillSavCat) setDrillSavCat(d.name); }}>{savPieData.map(function(_, i) { return <Cell key={i} fill={COLORS[(i+4) % COLORS.length]} cursor={drillSavCat ? "default" : "pointer"} />; })}</Pie><Tooltip content={function(p) { return <CustomPieTooltip active={p.active} payload={p.payload} total={savPieTotal} sym={sym} />; }} /></PieChart></ResponsiveContainer>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{savPieData.map(function(d, i) { return <span key={d.name} onClick={function() { if (!drillSavCat) setDrillSavCat(d.name); }} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, color: "#94a3b8", cursor: drillSavCat ? "default" : "pointer" }}><span style={{ width: 7, height: 7, borderRadius: 1, background: COLORS[(i+4) % COLORS.length], display: "inline-block" }}></span>{d.name} {savPieTotal > 0 ? Math.round((d.value/savPieTotal)*100) : 0}%</span>; })}</div>
-                  {!drillSavCat && <p style={{ fontSize: 10, color: "#475569", margin: "6px 0 0" }}>Click slice to drill down</p>}
-                </div> : <p style={{ color: "#475569", fontSize: 13, textAlign: "center", marginTop: 40 }}>No savings tagged under "Savings" category</p>}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{savPieData.map(function(d, i) { return <span key={d.name} onClick={function() { if (!drillSavCat) setDrillSavCat(d.name); }} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, color: th.muted, cursor: drillSavCat ? "default" : "pointer" }}><span style={{ width: 7, height: 7, borderRadius: 1, background: COLORS[(i+4) % COLORS.length], display: "inline-block" }}></span>{d.name} {savPieTotal > 0 ? Math.round((d.value/savPieTotal)*100) : 0}%</span>; })}</div>
+                  {!drillSavCat && <p style={{ fontSize: 10, color: th.faint, margin: "6px 0 0" }}>Click slice to drill down</p>}
+                </div> : <p style={{ color: th.faint, fontSize: 13, textAlign: "center", marginTop: 40 }}>No savings tagged under "Savings" category</p>}
               </div>
             </div>
 
-            <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "1rem", marginBottom: 12 }}>
+            <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "1rem", marginBottom: 12 }}>
               <h3 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 600 }}>Expenses by Account</h3>
               {acctPieData.length > 0 ? <div>
                 <ResponsiveContainer width="100%" height={180}><PieChart><Pie data={acctPieData} cx="50%" cy="50%" outerRadius={70} dataKey="value">{acctPieData.map(function(d, i) { var acct = accounts.find(function(a) { return a.name === d.name; }); var c = acct ? (ACCT_COLORS[acct.type] || COLORS[i % COLORS.length]) : COLORS[i % COLORS.length]; return <Cell key={i} fill={c} />; })}</Pie><Tooltip content={function(p) { return <CustomPieTooltip active={p.active} payload={p.payload} total={acctPieTotal} sym={sym} />; }} /></PieChart></ResponsiveContainer>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{acctPieData.map(function(d, i) { var acct = accounts.find(function(a) { return a.name === d.name; }); var c = acct ? (ACCT_COLORS[acct.type] || COLORS[i % COLORS.length]) : COLORS[i % COLORS.length]; return <span key={d.name} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, color: "#94a3b8" }}><span style={{ width: 7, height: 7, borderRadius: 1, background: c, display: "inline-block" }}></span>{d.name} {acctPieTotal > 0 ? Math.round((d.value/acctPieTotal)*100) : 0}%</span>; })}</div>
-              </div> : <p style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: "1.5rem 0" }}>No account data — assign accounts to transactions</p>}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>{acctPieData.map(function(d, i) { var acct = accounts.find(function(a) { return a.name === d.name; }); var c = acct ? (ACCT_COLORS[acct.type] || COLORS[i % COLORS.length]) : COLORS[i % COLORS.length]; return <span key={d.name} style={{ fontSize: 10, display: "flex", alignItems: "center", gap: 3, color: th.muted }}><span style={{ width: 7, height: 7, borderRadius: 1, background: c, display: "inline-block" }}></span>{d.name} {acctPieTotal > 0 ? Math.round((d.value/acctPieTotal)*100) : 0}%</span>; })}</div>
+              </div> : <p style={{ color: th.faint, fontSize: 13, textAlign: "center", padding: "1.5rem 0" }}>No account data — assign accounts to transactions</p>}
             </div>
 
-            <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "1rem" }}>
+            <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "1rem" }}>
               <h3 style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 600 }}>Income waterfall</h3>
-              <p style={{ margin: "0 0 12px", fontSize: 11, color: "#475569" }}>How income flows through expenses into cash</p>
+              <p style={{ margin: "0 0 12px", fontSize: 11, color: th.faint }}>How income flows through expenses into cash</p>
               {income > 0 || expense > 0 ? <div>
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={wfd} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#2d2d3d" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 10 }} axisLine={{ stroke: "#2d2d3d" }} interval={0} angle={-25} textAnchor="end" height={50} />
-                    <YAxis tick={{ fill: "#94a3b8", fontSize: 10 }} axisLine={{ stroke: "#2d2d3d" }} tickFormatter={function(v) { return sym + (v/1000).toFixed(0) + "k"; }} domain={[0, maxV]} width={50} />
+                    <CartesianGrid strokeDasharray="3 3" stroke={th.border} vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: th.muted, fontSize: 10 }} axisLine={{ stroke: th.border }} interval={0} angle={-25} textAnchor="end" height={50} />
+                    <YAxis tick={{ fill: th.muted, fontSize: 10 }} axisLine={{ stroke: th.border }} tickFormatter={function(v) { return sym + (v/1000).toFixed(0) + "k"; }} domain={[0, maxV]} width={50} />
                     <Tooltip content={function(p) { return <CustomWFTooltip active={p.active} payload={p.payload} sym={sym} />; }} />
                     <Bar dataKey="end" shape={function(props) {
                       var d = wfd[props.index], bg = props.background;
@@ -1079,8 +1177,8 @@ export default function App() {
                     }}>{wfd.map(function(d, i) { return <Cell key={i} fill={d.fill} />; })}</Bar>
                   </BarChart>
                 </ResponsiveContainer>
-                <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap", marginTop: 4 }}>{[["Income","#10b981"],["Expenses","#ef4444"],["Cash","#6366f1"]].map(function(it) { return <span key={it[0]} style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4, color: "#94a3b8" }}><span style={{ width: 9, height: 9, borderRadius: 2, background: it[1], display: "inline-block" }}></span>{it[0]}</span>; })}</div>
-              </div> : <p style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: "3rem 0" }}>No data for this period</p>}
+                <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap", marginTop: 4 }}>{[["Income","#10b981"],["Expenses","#ef4444"],["Cash","#6366f1"]].map(function(it) { return <span key={it[0]} style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4, color: th.muted }}><span style={{ width: 9, height: 9, borderRadius: 2, background: it[1], display: "inline-block" }}></span>{it[0]}</span>; })}</div>
+              </div> : <p style={{ color: th.faint, fontSize: 13, textAlign: "center", padding: "3rem 0" }}>No data for this period</p>}
             </div>
           </div>
         )}
@@ -1089,28 +1187,33 @@ export default function App() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap", gap: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Transactions</h2>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 10, padding: "4px 8px" }}>
+                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: th.text }}>Transactions</h2>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, background: th.surface, border: "1px solid " + th.border, borderRadius: 10, padding: "5px 8px" }}>
                   <button onClick={prevMonth} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 16, padding: "0 2px" }}>‹</button>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", minWidth: 90, textAlign: "center" }}>{MONTHS[selMonth].slice(0,3)} {selYear}</span>
+                  <select value={selMonth} onChange={function(e) { setSelMonth(Number(e.target.value)); setDrillCat(null); }} style={{ background: "transparent", border: "none", color: th.text, fontSize: 13, fontWeight: 600, cursor: "pointer", outline: "none" }}>
+                    {MONTHS.map(function(m, i) { return <option key={m} value={i} style={{ background: th.surface, color: th.text }}>{m.slice(0,3)}</option>; })}
+                  </select>
+                  <select value={selYear} onChange={function(e) { setSelYear(Number(e.target.value)); setDrillCat(null); }} style={{ background: "transparent", border: "none", color: darkMode ? "#a5b4fc" : "#6366f1", fontSize: 13, fontWeight: 600, cursor: "pointer", outline: "none" }}>
+                    {yearOptions.map(function(y) { return <option key={y} value={y} style={{ background: th.surface, color: th.text }}>{y}</option>; })}
+                  </select>
                   <button onClick={nextMonth} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 16, padding: "0 2px" }}>›</button>
                 </div>
               </div>
               <button onClick={function() { setShowAddModal(true); setEditTxn(null); }} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>+ Add</button>
             </div>
-            <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, overflowX: "auto" }}>
-              {monthTxns.length === 0 ? <p style={{ color: "#475569", textAlign: "center", padding: "3rem" }}>No transactions for {MONTHS[selMonth]} {selYear}.</p> :
+            <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, overflowX: "auto" }}>
+              {monthTxns.length === 0 ? <p style={{ color: th.faint, textAlign: "center", padding: "3rem" }}>No transactions for {MONTHS[selMonth]} {selYear}.</p> :
                 <table className="otx" style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
-                  <thead><tr style={{ borderBottom: "1px solid #2d2d3d" }}>{["Date","Description","Category","Account","Type","Amount",""].map(function(h) { return <th key={h} style={{ padding: "10px 8px", textAlign: "left", fontSize: 11, color: "#64748b", fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>; })}</tr></thead>
+                  <thead><tr style={{ borderBottom: "1px solid " + th.border }}>{["Date","Description","Category","Account","Type","Amount",""].map(function(h) { return <th key={h} style={{ padding: "10px 8px", textAlign: "left", fontSize: 11, color: th.faint, fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>; })}</tr></thead>
                   <tbody>{monthTxns.slice().sort(function(a,b) { return new Date(b.date) - new Date(a.date); }).map(function(t) {
                     var acct = accounts.find(function(a) { return a.id === t.accountId; });
                     var acctColor = acct ? (ACCT_COLORS[acct.type] || "#888") : "#475569";
-                    return <tr key={t.id} style={{ borderBottom: "1px solid #1e1e2e" }}>
-                      <td style={{ padding: "8px", fontSize: 12, color: "#94a3b8", whiteSpace: "nowrap" }}>{t.date}</td>
-                      <td style={{ padding: "8px", fontSize: 12, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.description}</td>
-                      <td style={{ padding: "8px", fontSize: 12 }}><span style={{ background: "#1e1e2e", borderRadius: 6, padding: "2px 6px", fontSize: 11, whiteSpace: "nowrap" }}>{t.category || "—"}{t.subcategory ? " › " + t.subcategory : ""}</span></td>
+                    return <tr key={t.id} style={{ borderBottom: "1px solid " + th.border, background: th.surface }}>
+                      <td style={{ padding: "8px", fontSize: 12, color: th.muted, whiteSpace: "nowrap" }}>{t.date}</td>
+                      <td style={{ padding: "8px", fontSize: 12, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: th.text }}>{t.description}</td>
+                      <td style={{ padding: "8px", fontSize: 12 }}><span style={{ background: th.surface2, borderRadius: 6, padding: "2px 6px", fontSize: 11, whiteSpace: "nowrap" }}>{t.category || "—"}{t.subcategory ? " › " + t.subcategory : ""}</span></td>
                       <td style={{ padding: "8px", fontSize: 12 }}>{acct ? <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 20, background: acctColor + "22", color: acctColor, whiteSpace: "nowrap" }}>{acct.name}</span> : <span style={{ color: "#475569" }}>—</span>}</td>
-                      <td style={{ padding: "8px" }}><span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 20, background: t.type === "income" ? "#052e16" : "#450a0a", color: t.type === "income" ? "#4ade80" : "#f87171", whiteSpace: "nowrap" }}>{t.type}</span></td>
+                      <td style={{ padding: "8px" }}><span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 20, background: t.type === "income" ? (darkMode ? "#052e16" : "#dcfce7") : (darkMode ? "#450a0a" : "#fee2e2"), color: t.type === "income" ? (darkMode ? "#4ade80" : "#16a34a") : (darkMode ? "#f87171" : "#dc2626"), whiteSpace: "nowrap" }}>{t.type}</span></td>
                       <td style={{ padding: "8px", fontSize: 12, fontWeight: 600, color: t.type === "income" ? "#4ade80" : "#f87171", whiteSpace: "nowrap" }}>{t.type === "expense" ? "-" : ""}{fmt(t.amount, sym)}</td>
                       <td style={{ padding: "8px" }}><div style={{ display: "flex", gap: 4 }}>
                         <button onClick={function() { setEditTxn(t); }} style={{ fontSize: 10, padding: "3px 7px", borderRadius: 6, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer" }}>Edit</button>
@@ -1125,12 +1228,12 @@ export default function App() {
 
         {tab === "Upload" && (
           <div>
-            <h2 style={{ margin: "0 0 1rem", fontSize: 18, fontWeight: 700 }}>Upload Statement</h2>
-            <div style={{ background: "#1a1a24", border: "2px dashed #2d2d3d", borderRadius: 12, padding: "2rem 1rem", textAlign: "center", marginBottom: "1rem" }}>
+            <h2 style={{ margin: "0 0 1rem", fontSize: 18, fontWeight: 700, color: th.text }}>Upload Statement</h2>
+            <div style={{ background: th.surface, border: "2px dashed " + th.border, borderRadius: 12, padding: "2rem 1rem", textAlign: "center", marginBottom: "1rem" }}>
               <div style={{ fontSize: 36, marginBottom: 10 }}>📄</div>
-              <p style={{ color: "#94a3b8", margin: "0 0 4px", fontSize: 14 }}>Upload your bank or card statement</p>
-              <p style={{ color: "#10b981", margin: "0 0 4px", fontSize: 12 }}>✓ HDFC Bank · HDFC Credit Card · Indian Bank parsed locally · ✓ Generic CSV/Excel auto-detection</p>
-              <p style={{ color: "#475569", margin: "0 0 14px", fontSize: 12 }}>CSV, TXT supported — no data sent to any server</p>
+              <p style={{ color: th.muted, margin: "0 0 4px", fontSize: 14 }}>Upload your bank or card statement</p>
+              <p style={{ color: "#10b981", margin: "0 0 4px", fontSize: 12 }}>✓ HDFC Bank · HDFC Credit Card · Indian Bank · Axis Bank parsed locally · ✓ Generic CSV/Excel auto-detection</p>
+              <p style={{ color: th.faint, margin: "0 0 14px", fontSize: 12 }}>CSV, TXT supported — no data sent to any server</p>
               <input ref={fileRef} type="file" accept=".csv,.txt,.pdf,.xls,.xlsx" style={{ display: "none" }} onChange={function(e) { if (e.target.files[0]) { setParseError(""); setParseDebug(""); parseStatement(e.target.files[0]); } }} />
               <button onClick={function() { fileRef.current.click(); }} disabled={parsing} style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: parsing ? "#3730a3" : "#6366f1", color: "#fff", cursor: parsing ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 600 }}>
                 {parsing ? "⏳ Parsing..." : "Choose File"}
@@ -1151,11 +1254,11 @@ export default function App() {
             </div>
 
             {showCyclePicker && (
-              <div style={{ background: "#1a1a24", border: "1px solid #6366f1", borderRadius: 14, padding: "1.25rem", marginBottom: "1rem" }}>
+              <div style={{ background: th.surface, border: "1px solid #6366f1", borderRadius: 14, padding: "1.25rem", marginBottom: "1rem" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
                   <span style={{ fontSize: 20 }}>📅</span>
-                  <div><h3 style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 700, color: "#a5b4fc" }}>Yearly statement detected</h3>
-                  <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>{allParsedTxns.length} transactions found. Select the cycle to load.</p></div>
+                  <div><h3 style={{ margin: "0 0 2px", fontSize: 14, fontWeight: 700, color: "#6366f1" }}>Yearly statement detected</h3>
+                  <p style={{ margin: 0, fontSize: 12, color: th.faint }}>{allParsedTxns.length} transactions found. Select the cycle to load.</p></div>
                 </div>
                 {(function() {
                   var avail = {};
@@ -1163,13 +1266,13 @@ export default function App() {
                   var sorted = Object.values(avail).sort(function(a,b) { return b.year !== a.year ? b.year-a.year : b.month-a.month; });
                   return <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "12px 0" }}>{sorted.map(function(item) {
                     var sel = cyclePickerMonth === item.month && cyclePickerYear === item.year;
-                    return <button key={item.year+"-"+item.month} onClick={function() { setCyclePickerMonth(item.month); setCyclePickerYear(item.year); }} style={{ padding: "7px 12px", borderRadius: 10, border: "1px solid "+(sel?"#6366f1":"#2d2d3d"), background: sel?"#312e81":"#0f0f13", color: sel?"#c7d2fe":"#94a3b8", cursor: "pointer", fontSize: 12, fontWeight: sel?700:400, textAlign: "center" }}>
+                    return <button key={item.year+"-"+item.month} onClick={function() { setCyclePickerMonth(item.month); setCyclePickerYear(item.year); }} style={{ padding: "7px 12px", borderRadius: 10, border: "1px solid "+(sel?"#6366f1":"#2d2d3d"), background: sel?"#312e81":th.input, color: sel?"#c7d2fe":th.muted, cursor: "pointer", fontSize: 12, fontWeight: sel?700:400, textAlign: "center" }}>
                       {MONTHS[item.month].slice(0,3)} {item.year}<span style={{ display: "block", fontSize: 10, color: sel?"#a5b4fc":"#475569" }}>{item.count} txns</span>
                     </button>;
                   })}</div>;
                 })()}
                 <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 10, borderTop: "1px solid #2d2d3d", flexWrap: "wrap" }}>
-                  <p style={{ margin: 0, fontSize: 12, color: "#64748b", flex: 1 }}>Cycle day {cycleStart}-{cycleEnd} · {filterToCycle(allParsedTxns, cyclePickerMonth, cyclePickerYear).length} in range</p>
+                  <p style={{ margin: 0, fontSize: 12, color: th.faint, flex: 1 }}>Cycle day {cycleStart}-{cycleEnd} · {filterToCycle(allParsedTxns, cyclePickerMonth, cyclePickerYear).length} in range</p>
                   <button onClick={function() { setShowCyclePicker(false); setAllParsedTxns([]); }} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #2d2d3d", background: "none", color: "#94a3b8", cursor: "pointer", fontSize: 12 }}>Cancel</button>
                   <button onClick={function() { applyMonthFilter(cyclePickerMonth, cyclePickerYear); }} style={{ padding: "6px 18px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Load cycle →</button>
                 </div>
@@ -1180,8 +1283,8 @@ export default function App() {
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                   <div>
-                    <h3 style={{ margin: "0 0 2px", fontSize: 15, fontWeight: 600 }}>{parsedTxns.length} transactions parsed</h3>
-                    <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                    <h3 style={{ margin: "0 0 2px", fontSize: 15, fontWeight: 600, color: th.text }}>{parsedTxns.length} transactions parsed</h3>
+                    <p style={{ margin: 0, fontSize: 12, color: th.faint }}>
                       <span style={{ color: "#4ade80" }}>✓ {autoCatCount} auto-categorized</span>
                       {uncatCount > 0 && <span style={{ color: "#facc15", marginLeft: 8 }}>⚠ {uncatCount} need attention</span>}
                     </p>
@@ -1193,7 +1296,7 @@ export default function App() {
                     var needsAttn = !t.category || t.autocat === "low";
                     var origIdx = parsedTxns.findIndex(function(p) { return p.id === t.id; });
                     function upd(k, v) { setParsedTxns(function(prev) { return prev.map(function(p, j) { return j === origIdx ? Object.assign({}, p, { [k]: v }) : p; }); }); }
-                    return <div key={t.id} style={{ background: "#1a1a24", border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), borderRadius: 10, padding: "10px 12px" }}>
+                    return <div key={t.id} style={{ background: th.surface, border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), borderRadius: 10, padding: "10px 12px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                         <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: needsAttn?"#451a03":"#052e16", color: needsAttn?"#facc15":"#4ade80" }}>{needsAttn?"⚠ Manual":"✓ Auto"}</span>
                         {t.originalDate && <span style={{ fontSize: 10, color: "#f59e0b" }}>reflected from {t.originalDate}</span>}
@@ -1201,19 +1304,19 @@ export default function App() {
                         <button onClick={function() { setParsedTxns(function(prev) { return prev.filter(function(p) { return p.id !== t.id; }); }); }} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 6, border: "1px solid #450a0a", background: "none", color: "#f87171", cursor: "pointer" }}>✕</button>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
-                        <input type="date" value={t.date} onChange={function(e) { upd("date", e.target.value); }} style={{ background: "#0f0f13", border: "1px solid #2d2d3d", color: "#94a3b8", padding: "3px 6px", borderRadius: 6, fontSize: 11 }} />
+                        <input type="date" value={t.date} onChange={function(e) { upd("date", e.target.value); }} style={{ background: th.input, border: "1px solid " + th.border, color: th.muted, padding: "3px 6px", borderRadius: 6, fontSize: 11 }} />
                         <input type="number" value={t.amount} min="0" step="0.01" onChange={function(e) { upd("amount", parseFloat(e.target.value)||0); }} style={{ background: "#0f0f13", border: "1px solid #2d2d3d", color: t.type==="income"?"#4ade80":"#f87171", padding: "3px 6px", borderRadius: 6, fontSize: 11, width: 90 }} />
-                        <span style={{ fontSize: 12, flex: 1, minWidth: 80, color: "#e2e8f0" }}>{t.description}</span>
+                        <span style={{ fontSize: 12, flex: 1, minWidth: 80, color: th.text, wordBreak: "break-word", overflowWrap: "anywhere" }}>{t.description}</span>
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         <select value={t.category} onChange={function(e) { upd("category", e.target.value); upd("subcategory", ""); upd("autocat", "high"); }} style={{ flex: 1, minWidth: 120, background: needsAttn?"#1c1008":"#0a1a0f", border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: "#e2e8f0", padding: "4px 6px", borderRadius: 6, fontSize: 12 }}>
                           <option value="">Category...</option>
                           {Object.keys(categories).filter(function(c) { return t.type==="income"?c==="Income":c!=="Income"; }).map(function(c) { return <option key={c} value={c}>{c}</option>; })}
                         </select>
-                        {t.category && <select value={t.subcategory||""} onChange={function(e) { upd("subcategory", e.target.value); }} style={{ flex: 1, minWidth: 100, background: needsAttn?"#1c1008":"#0a1a0f", border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: "#e2e8f0", padding: "4px 6px", borderRadius: 6, fontSize: 12 }}>
+                        <select value={t.subcategory||""} onChange={function(e) { upd("subcategory", e.target.value); }} disabled={!t.category} style={{ flex: 1, minWidth: 100, background: needsAttn?"#1c1008":"#0a1a0f", border: "1px solid "+(needsAttn?"#854d0e":"#14532d"), color: t.category?"#e2e8f0":"#475569", padding: "4px 6px", borderRadius: 6, fontSize: 12, opacity: t.category?1:0.5, cursor: t.category?"pointer":"not-allowed" }}>
                           <option value="">Subcategory...</option>
                           {(categories[t.category]||[]).map(function(s) { return <option key={s} value={s}>{s}</option>; })}
-                        </select>}
+                        </select>
                       </div>
                     </div>;
                   })}
@@ -1225,73 +1328,73 @@ export default function App() {
 
         {tab === "Categories" && (
           <div>
-            <h2 style={{ margin: "0 0 1rem", fontSize: 18, fontWeight: 700 }}>Manage Categories</h2>
+            <h2 style={{ margin: "0 0 1rem", fontSize: 18, fontWeight: 700, color: th.text }}>Manage Categories</h2>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))", gap: 10 }}>
               {Object.keys(categories).map(function(cat) {
                 var subs = categories[cat];
-                return <div key={cat} style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "1rem" }}>
+                return <div key={cat} style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "1rem" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#a5b4fc" }}>{cat}</h3>
+                    <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#6366f1" }}>{cat}</h3>
                     <button onClick={function() { setCategories(function(prev) { var n=Object.assign({},prev); delete n[cat]; return n; }); }} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 6, border: "1px solid #450a0a", background: "none", color: "#f87171", cursor: "pointer" }}>Remove</button>
                   </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>{subs.map(function(s) { return <span key={s} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: "#1e1e2e", color: "#94a3b8", display: "flex", alignItems: "center", gap: 3 }}>{s}<span style={{ cursor: "pointer", color: "#475569" }} onClick={function() { setCategories(function(prev) { return Object.assign({},prev,{[cat]:prev[cat].filter(function(x){return x!==s;})}); }); }}>×</span></span>; })}</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>{subs.map(function(s) { return <span key={s} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 20, background: th.surface2, color: th.muted, display: "flex", alignItems: "center", gap: 3 }}>{s}<span style={{ cursor: "pointer", color: "#475569" }} onClick={function() { setCategories(function(prev) { return Object.assign({},prev,{[cat]:prev[cat].filter(function(x){return x!==s;})}); }); }}>×</span></span>; })}</div>
                   <div style={{ display: "flex", gap: 5 }}>
-                    <input placeholder="Add subcategory" value={newSub[cat]||""} onChange={function(e) { var v=e.target.value; setNewSub(function(p){return Object.assign({},p,{[cat]:v});}); }} onKeyDown={function(e) { if(e.key==="Enter"&&newSub[cat]&&newSub[cat].trim()){var v=newSub[cat].trim();setCategories(function(p){return Object.assign({},p,{[cat]:p[cat].concat([v])});});setNewSub(function(p){return Object.assign({},p,{[cat]:""});});} }} style={{ flex: 1, background: "#0f0f13", border: "1px solid #2d2d3d", color: "#e2e8f0", padding: "4px 8px", borderRadius: 6, fontSize: 12 }} />
+                    <input placeholder="Add subcategory" value={newSub[cat]||""} onChange={function(e) { var v=e.target.value; setNewSub(function(p){return Object.assign({},p,{[cat]:v});}); }} onKeyDown={function(e) { if(e.key==="Enter"&&newSub[cat]&&newSub[cat].trim()){var v=newSub[cat].trim();setCategories(function(p){return Object.assign({},p,{[cat]:p[cat].concat([v])});});setNewSub(function(p){return Object.assign({},p,{[cat]:""});});} }} style={{ flex: 1, background: th.input, border: "1px solid " + th.border, color: th.text, padding: "4px 8px", borderRadius: 6, fontSize: 12 }} />
                     <button onClick={function() { if(newSub[cat]&&newSub[cat].trim()){var v=newSub[cat].trim();setCategories(function(p){return Object.assign({},p,{[cat]:p[cat].concat([v])});});setNewSub(function(p){return Object.assign({},p,{[cat]:""});});} }} style={{ padding: "4px 10px", borderRadius: 6, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 12 }}>+</button>
                   </div>
                 </div>;
               })}
             </div>
             <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <input placeholder="New category name" value={newCat} onChange={function(e){setNewCat(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter"&&newCat.trim()&&!categories[newCat]){var v=newCat.trim();setCategories(function(p){return Object.assign({},p,{[v]:[]});});setNewCat("");}}} style={{ background: "#1a1a24", border: "1px solid #2d2d3d", color: "#e2e8f0", padding: "8px 12px", borderRadius: 8, fontSize: 13, flex: 1, minWidth: 180 }} />
+              <input placeholder="New category name" value={newCat} onChange={function(e){setNewCat(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter"&&newCat.trim()&&!categories[newCat]){var v=newCat.trim();setCategories(function(p){return Object.assign({},p,{[v]:[]});});setNewCat("");}}} style={{ background: th.input, border: "1px solid " + th.border, color: th.text, padding: "8px 12px", borderRadius: 8, fontSize: 13, flex: 1, minWidth: 180 }} />
               <button onClick={function(){if(newCat.trim()&&!categories[newCat]){var v=newCat.trim();setCategories(function(p){return Object.assign({},p,{[v]:[]});});setNewCat("");}}} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Add Category</button>
             </div>
             <h2 style={{ margin: "1.5rem 0 1rem", fontSize: 18, fontWeight: 700 }}>Manage Accounts</h2>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10, marginBottom: 12 }}>
               {accounts.map(function(a) {
                 var c = ACCT_COLORS[a.type] || "#888";
-                return <div key={a.id} style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div><div style={{ fontWeight: 600, fontSize: 13 }}>{a.name}</div><div style={{ fontSize: 11, marginTop: 3, color: c }}>{a.type}</div></div>
+                return <div key={a.id} style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div><div style={{ fontWeight: 600, fontSize: 13, color: th.text }}>{a.name}</div><div style={{ fontSize: 11, marginTop: 3, color: c }}>{a.type}</div></div>
                   <button onClick={function() { setAccounts(function(prev) { return prev.filter(function(x) { return x.id !== a.id; }); }); }} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 6, border: "1px solid #450a0a", background: "none", color: "#f87171", cursor: "pointer" }}>Remove</button>
                 </div>;
               })}
             </div>
-            <AddAccountInline onAdd={function(a) { setAccounts(function(p) { return p.concat([a]); }); }} />
+            <AddAccountInline onAdd={function(a) { setAccounts(function(p) { return p.concat([a]); }); }} th={th} />
           </div>
         )}
 
         {tab === "Settings" && (
           <div style={{ maxWidth: 480 }}>
-            <h2 style={{ margin: "0 0 1rem", fontSize: 18, fontWeight: 700 }}>Settings</h2>
-            <div style={{ background: "#1a1a24", border: "1px solid #2d2d3d", borderRadius: 12, padding: "1.25rem", display: "flex", flexDirection: "column", gap: 16 }}>
-              <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 5 }}>Default Currency</label>
+            <h2 style={{ margin: "0 0 1rem", fontSize: 18, fontWeight: 700, color: th.text }}>Settings</h2>
+            <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "1.25rem", display: "flex", flexDirection: "column", gap: 16 }}>
+              <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Default Currency</label>
                 <select value={currency.code} onChange={function(e){var c=CURRENCIES.find(function(x){return x.code===e.target.value;});if(c)setCurrency(c);}} style={is}>{CURRENCIES.map(function(c){return <option key={c.code} value={c.code}>{c.symbol} {c.code} — {c.name}</option>;})}</select>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 5 }}>Cycle Start Day</label><input type="number" min={1} max={28} value={cycleStart} onChange={function(e){setCycleStart(Number(e.target.value));}} style={is} /></div>
-                <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 5 }}>Cycle End Day</label><input type="number" min={1} max={31} value={cycleEnd} onChange={function(e){setCycleEnd(Number(e.target.value));}} style={is} /></div>
+                <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Cycle Start Day</label><input type="number" min={1} max={28} value={cycleStart} onChange={function(e){setCycleStart(Number(e.target.value));}} style={is} /></div>
+                <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Cycle End Day</label><input type="number" min={1} max={31} value={cycleEnd} onChange={function(e){setCycleEnd(Number(e.target.value));}} style={is} /></div>
               </div>
-              <div><label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 5 }}>Export Statement Data</label>
+              <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Export Statement Data</label>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={function(){exportData("csv");}} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "#0f0f13", color: "#a5b4fc", cursor: "pointer", fontSize: 13 }}>↓ CSV</button>
-                  <button onClick={function(){exportData("txt");}} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #2d2d3d", background: "#0f0f13", color: "#a5b4fc", cursor: "pointer", fontSize: 13 }}>↓ Report</button>
+                  <button onClick={function(){exportData("csv");}} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + th.border, background: th.input, color: "#6366f1", cursor: "pointer", fontSize: 13 }}>↓ CSV</button>
+                  <button onClick={function(){exportData("txt");}} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid " + th.border, background: th.input, color: "#6366f1", cursor: "pointer", fontSize: 13 }}>↓ Report</button>
                 </div>
               </div>
-              <div style={{ borderTop: "1px solid #2d2d3d", paddingTop: 16 }}>
-                <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 4 }}>Backup & Restore</label>
-                <p style={{ margin: "0 0 8px", fontSize: 12, color: "#475569" }}>Saved in your browser's localStorage. Use backup to transfer across devices.</p>
+              <div style={{ borderTop: "1px solid " + th.border, paddingTop: 16 }}>
+                <label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 4 }}>Backup & Restore</label>
+                <p style={{ margin: "0 0 8px", fontSize: 12, color: th.faint }}>Saved in your browser's localStorage. Use backup to transfer across devices.</p>
                 <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                  <button onClick={exportJSON} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #14532d", background: "#052e16", color: "#4ade80", cursor: "pointer", fontSize: 13 }}>↓ Download Backup</button>
-                  <button onClick={function(){importRef.current.click();}} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #1e3a5f", background: "#0c1e35", color: "#60a5fa", cursor: "pointer", fontSize: 13 }}>↑ Restore Backup</button>
+                  <button onClick={exportJSON} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #14532d", background: darkMode ? "#052e16" : "#f0fdf4", color: darkMode ? "#4ade80" : "#16a34a", cursor: "pointer", fontSize: 13 }}>↓ Download Backup</button>
+                  <button onClick={function(){importRef.current.click();}} style={{ flex: 1, padding: "9px", borderRadius: 8, border: "1px solid #1e3a5f", background: darkMode ? "#0c1e35" : "#eff6ff", color: "#3b82f6", cursor: "pointer", fontSize: 13 }}>↑ Restore Backup</button>
                 </div>
                 <input ref={importRef} type="file" accept=".json" style={{ display: "none" }} onChange={function(e){if(e.target.files[0])importJSON(e.target.files[0]);}} />
-                <div style={{ background: "#1e1e2e", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#64748b", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ background: th.surface2, borderRadius: 8, padding: "8px 12px", fontSize: 12, color: th.faint, display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{ color: "#4ade80" }}>●</span> {transactions.length} transactions · {Object.keys(categories).length} categories · {accounts.length} accounts
                 </div>
               </div>
-              <div style={{ borderTop: "1px solid #2d2d3d", paddingTop: 16 }}>
-                <label style={{ display: "block", fontSize: 12, color: "#64748b", marginBottom: 8 }}>Danger Zone</label>
-                {!confirmClear ? <button onClick={function(){setConfirmClear(true);}} style={{ width: "100%", padding: "9px", borderRadius: 8, border: "1px solid #450a0a", background: "#0f0f13", color: "#f87171", cursor: "pointer", fontSize: 13 }}>🗑 Clear all data</button> :
+              <div style={{ borderTop: "1px solid " + th.border, paddingTop: 16 }}>
+                <label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 8 }}>Danger Zone</label>
+                {!confirmClear ? <button onClick={function(){setConfirmClear(true);}} style={{ width: "100%", padding: "9px", borderRadius: 8, border: "1px solid #450a0a", background: darkMode ? "#0f0f13" : "#fff5f5", color: "#f87171", cursor: "pointer", fontSize: 13 }}>🗑 Clear all data</button> :
                   <div style={{ background: "#1c0a0a", border: "1px solid #7f1d1d", borderRadius: 8, padding: "12px" }}>
                     <p style={{ margin: "0 0 10px", fontSize: 13, color: "#fca5a5" }}>Are you sure? This will permanently delete all transactions and categories.</p>
                     <div style={{ display: "flex", gap: 8 }}>
@@ -1305,7 +1408,7 @@ export default function App() {
         )}
       </div>
 
-      {(showAddModal || editTxn) && <TxnModal txn={editTxn} categories={categories} accounts={accounts} sym={sym} onSave={saveTxn} onClose={function(){setShowAddModal(false);setEditTxn(null);}} />}
+      {(showAddModal || editTxn) && <TxnModal txn={editTxn} categories={categories} accounts={accounts} sym={sym} th={th} onSave={saveTxn} onClose={function(){setShowAddModal(false);setEditTxn(null);}} />}
       {showAccountPicker && <AccountPickerModal accounts={accounts} onAddAccount={function(a) { setAccounts(function(p) { return p.concat([a]); }); }} onConfirm={onAccountConfirmed} onCancel={function() { setShowAccountPicker(false); setPendingParsedTxns([]); }} />}
       {showCCDateModal && <CCDateModal onConfirm={onCCDateConfirmed} />}
     </div>
