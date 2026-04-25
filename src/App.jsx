@@ -768,6 +768,7 @@ export default function App() {
   var [drillSavCat, setDrillSavCat] = useState(null);
   var [storageReady, setStorageReady] = useState(false);
   var [confirmClear, setConfirmClear] = useState(false);
+  var [carryForward, setCarryForward] = useState(false);
   var [darkMode, setDarkMode] = useState(true);
   var th = makeTheme(darkMode);
   var [showAccountPicker, setShowAccountPicker] = useState(false);
@@ -801,6 +802,7 @@ export default function App() {
         if (s.selMonth !== undefined) setSelMonth(s.selMonth);
         if (s.selYear) setSelYear(s.selYear);
         if (s.darkMode !== undefined) setDarkMode(s.darkMode);
+        if (s.carryForward !== undefined) setCarryForward(s.carryForward);
       }
     } catch(e) {}
     setStorageReady(true);
@@ -820,7 +822,7 @@ export default function App() {
   }, [transactions, storageReady]);
   useEffect(function() { if (storageReady) store.set("wt:cat", JSON.stringify(categories)); }, [categories, storageReady]);
   useEffect(function() { if (storageReady) store.set("wt:accts", JSON.stringify(accounts)); }, [accounts, storageReady]);
-  useEffect(function() { if (storageReady) store.set("wt:cfg", JSON.stringify({ cycleStart, cycleEnd, currency: currency.code, selMonth, selYear, darkMode })); }, [cycleStart, cycleEnd, currency, selMonth, selYear, darkMode, storageReady]);
+  useEffect(function() { if (storageReady) store.set("wt:cfg", JSON.stringify({ cycleStart, cycleEnd, currency: currency.code, selMonth, selYear, darkMode, carryForward })); }, [cycleStart, cycleEnd, currency, selMonth, selYear, darkMode, carryForward, storageReady]);
 
   function filterToCycle(txns, month, year) {
     var s = new Date(year, month, cycleStart);
@@ -846,6 +848,20 @@ export default function App() {
   var income = monthTxns.filter(function(t) { return t.type === "income"; }).reduce(function(a, b) { return a + b.amount; }, 0);
   var expense = monthTxns.filter(function(t) { return t.type === "expense"; }).reduce(function(a, b) { return a + b.amount; }, 0);
   var savings = income - expense;
+
+  // Carry forward: cumulative net savings from all months before current cycle
+  var openingBalance = 0;
+  if (carryForward) {
+    var cycleStartDate = new Date(selYear, selMonth, cycleStart);
+    openingBalance = transactions.reduce(function(sum, t) {
+      var d = new Date(t.date);
+      if (d < cycleStartDate) {
+        return sum + (t.type === "income" ? t.amount : -t.amount);
+      }
+      return sum;
+    }, 0);
+  }
+  var closingBalance = openingBalance + savings;
 
   function groupBy(arr, key) {
     var m = {};
@@ -1140,14 +1156,30 @@ export default function App() {
               </div>
             </div>
 
-            <div className="g3" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: "1rem" }}>
-              {[["Income", income, "#10b981"], ["Expenses", expense, "#ef4444"], ["Net Savings", savings, savings >= 0 ? "#6366f1" : "#ef4444"]].map(function(item) {
-                return <div key={item[0]} style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px" }}>
-                  <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>{item[0]}</p>
-                  <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: th.text, color: item[2] }}>{fmt(item[1], sym)}</p>
-                  {item[0] === "Net Savings" && income > 0 && <p style={{ margin: "3px 0 0", fontSize: 11, color: th.faint }}>{Math.round((savings/income)*100)}% savings rate</p>}
-                </div>;
-              })}
+            <div className="g3" style={{ display: "grid", gridTemplateColumns: carryForward ? "repeat(5,1fr)" : "repeat(3,1fr)", gap: 10, marginBottom: "1rem" }}>
+              {carryForward && <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px" }}>
+                <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>Opening Balance</p>
+                <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: openingBalance >= 0 ? "#10b981" : "#ef4444" }}>{fmt(openingBalance, sym)}</p>
+                <p style={{ margin: "3px 0 0", fontSize: 11, color: th.faint }}>Before this cycle</p>
+              </div>}
+              <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px" }}>
+                <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>Income</p>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#10b981" }}>{fmt(income, sym)}</p>
+              </div>
+              <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px" }}>
+                <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>Expenses</p>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#ef4444" }}>{fmt(expense, sym)}</p>
+              </div>
+              <div style={{ background: th.surface, border: "1px solid " + th.border, borderRadius: 12, padding: "12px 14px" }}>
+                <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>Net Savings</p>
+                <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: savings >= 0 ? "#6366f1" : "#ef4444" }}>{fmt(savings, sym)}</p>
+                {income > 0 && <p style={{ margin: "3px 0 0", fontSize: 11, color: th.faint }}>{Math.round((savings/income)*100)}% savings rate</p>}
+              </div>
+              {carryForward && <div style={{ background: th.surface, border: "2px solid #6366f1", borderRadius: 12, padding: "12px 14px" }}>
+                <p style={{ margin: "0 0 4px", fontSize: 11, color: th.faint, textTransform: "uppercase", letterSpacing: 1 }}>Closing Balance</p>
+                <p style={{ margin: 0, fontSize: 18, fontWeight: 700, color: closingBalance >= 0 ? "#6366f1" : "#ef4444" }}>{fmt(closingBalance, sym)}</p>
+                <p style={{ margin: "3px 0 0", fontSize: 11, color: th.faint }}>Cumulative net</p>
+              </div>}
             </div>
 
             <div className="g2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
@@ -1402,6 +1434,18 @@ export default function App() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Cycle Start Day</label><input type="number" min={1} max={28} value={cycleStart} onChange={function(e){setCycleStart(Number(e.target.value));}} style={is} /></div>
                 <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Cycle End Day</label><input type="number" min={1} max={31} value={cycleEnd} onChange={function(e){setCycleEnd(Number(e.target.value));}} style={is} /></div>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 8 }}>Carry Forward Net Savings</label>
+                <div onClick={function() { setCarryForward(function(p) { return !p; }); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: th.surface2, border: "1px solid " + th.border, borderRadius: 10, padding: "10px 14px", cursor: "pointer" }}>
+                  <div>
+                    <p style={{ margin: "0 0 2px", fontSize: 13, fontWeight: 500, color: th.text }}>Show Opening & Closing Balance</p>
+                    <p style={{ margin: 0, fontSize: 11, color: th.faint }}>Tracks cumulative net savings across months so you can match your actual bank balance</p>
+                  </div>
+                  <div style={{ marginLeft: 12, flexShrink: 0, width: 44, height: 24, borderRadius: 12, background: carryForward ? "#6366f1" : th.border, position: "relative", transition: "background 0.2s" }}>
+                    <div style={{ position: "absolute", top: 3, left: carryForward ? 23 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }}></div>
+                  </div>
+                </div>
               </div>
               <div><label style={{ display: "block", fontSize: 12, color: th.faint, marginBottom: 5 }}>Export Statement Data</label>
                 <div style={{ display: "flex", gap: 8 }}>
