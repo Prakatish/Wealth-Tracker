@@ -392,13 +392,114 @@ function parseAxisBank(text) {
   return txns;
 }
 
+function parseHDFCBankText(text) {
+  // HDFC Bank fixed-width text statement parser
+  // Balance always at pos ~126, Withdrawal at pos ~85-107, Deposit at pos ~100-125
+  var lines = text.split("\n");
+  var txns = [];
+  var currentDate = null;
+  var currentNarration = "";
+  var currentWithdrawal = 0;
+  var currentDeposit = 0;
+  var inTxns = false;
+
+  function parseAmt(s) {
+    if (!s || !s.trim()) return 0;
+    return parseFloat(s.replace(/,/g, "").trim()) || 0;
+  }
+
+  function pushTxn() {
+    if (!currentDate || (!currentWithdrawal && !currentDeposit)) return;
+    var parts = currentDate.split("/");
+    var date = "20" + parts[2] + "-" + parts[1] + "-" + parts[0];
+    var narration = currentNarration.trim()
+      .replace(/\*\*Continue\*\*/gi, "")
+      .replace(/\s{2,}/g, " ").trim();
+
+    var desc;
+    var upiMatch = narration.match(/^UPI-[^-]+-([^\s-]+@[^\s-]+)-[^-]+-[^-]+-(.+)$/i);
+    if (upiMatch) {
+      var upiId = upiMatch[1].replace(/\s/g, "").trim();
+      var remarks = upiMatch[2].replace(/\s+/g, " ").trim();
+      desc = upiId + " | " + remarks;
+    } else {
+      desc = narration
+        .replace(/^(UPI-|IMPS-|NEFT DR-|NEFT CR-|ACH C-|IB BILLPAY DR-|ATW-|O-MF-)/, "")
+        .split("-").pop().replace(/\s+/g, " ").trim() || narration.substring(0, 60);
+    }
+    desc = desc.substring(0, 80);
+
+    if (currentWithdrawal > 0)
+      txns.push({ date: date, description: desc, amount: currentWithdrawal, type: "expense" });
+    if (currentDeposit > 0)
+      txns.push({ date: date, description: desc, amount: currentDeposit, type: "income" });
+
+    currentDate = null; currentNarration = ""; currentWithdrawal = 0; currentDeposit = 0;
+  }
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.indexOf("Withdrawal Amt") > -1) { inTxns = true; continue; }
+    if (!inTxns) continue;
+    if (line.indexOf("STATEMENT SUMMARY") > -1 || line.indexOf("End Of Statement") > -1) break;
+    if (/^\s*[\*\-]{4,}/.test(line) || !line.trim()) continue;
+    if (/HDFC BANK Ltd\.|Statement From|Account No|IFSC|Branch Code|Page No|Date\s+Narration|Nomination|JOINT|A\/C Open|Account Status|Account Branch|Product Code|OD Limit|Cust ID|Address\s|State\s*:|Phone no|Email/.test(line)) continue;
+
+    var dateMatch = line.match(/^(\d{2}\/\d{2}\/\d{2})\s+/);
+    if (dateMatch) {
+      pushTxn();
+      currentDate = dateMatch[1];
+      currentWithdrawal = 0;
+      currentDeposit = 0;
+
+      // Find all amounts in line using regex with positions
+      // Balance is always the last number (pos ~126)
+      // If there are 2 numbers: first is withdrawal, second is balance
+      // If there are 3 numbers: first is withdrawal, second is deposit, third is balance
+      // Key insight: deposit column starts at pos ~100, withdrawal ends before pos ~120
+      var amtRe = /[\d,]+\.\d{2}/g;
+      var matches = [];
+      var m;
+      while ((m = amtRe.exec(line)) !== null) {
+        matches.push({ pos: m.index, val: parseAmt(m[0]) });
+      }
+      // Remove the last match (closing balance)
+      if (matches.length >= 2) {
+        matches.pop(); // remove balance
+        for (var mi = 0; mi < matches.length; mi++) {
+          if (matches[mi].pos >= 100) {
+            currentDeposit = matches[mi].val; // in deposit column
+          } else {
+            currentWithdrawal = matches[mi].val; // in withdrawal column
+          }
+        }
+      }
+
+      // Extract narration: after date+spaces (col 10), before ref number (16 digits)
+      var narPart = line.substring(10);
+      narPart = narPart.replace(/\s+\d{16}\s.*$/, "").trim();
+      currentNarration = narPart;
+    } else if (currentDate) {
+      var cont = line.trim();
+      // Skip page header continuation lines (address, city, name, etc)
+      var skipLine = /^(HDFC|Address|State|Phone|Email|Cust|Nomination|Account|Statement|Branch|Product|OD Limit|MR\s|\d{2},|ANUPURAM|CHENGALPATTU|TAMIL NADU|KALPAKKAM|PUDUPATTINAM|\*\*Continue\*\*)/i.test(cont);
+      if (cont && !/^[\d\s,\.\*]+$/.test(cont) && cont.length > 2 && !skipLine) {
+        currentNarration += " " + cont;
+      }
+    }
+  }
+  pushTxn();
+  return txns;
+}
+
+
 function detectAndParseLocally(content) {
   // 1. HDFC Credit Card (tilde delimited)
   if (content.indexOf("~|~") > -1) {
     var cc = parseHDFCCreditCard(content);
     if (cc.length > 0) return { txns: cc, label: "HDFC Credit Card: " + cc.length + " transactions" };
   }
-  // 2. HDFC Bank (CSV with DD/MM/YY dates)
+  // 2. HDFC Bank CSV (DD/MM/YY with commas)
   var lines = content.split("\n").filter(function(l) { return l.trim(); });
   for (var i = 0; i < lines.length; i++) {
     if (/\d{2}\/\d{2}\/\d{2}/.test(lines[i]) && lines[i].split(",").length >= 5) {
@@ -406,6 +507,11 @@ function detectAndParseLocally(content) {
       if (bank.length > 0) return { txns: bank, label: "HDFC Bank: " + bank.length + " transactions" };
       break;
     }
+  }
+  // 2b. HDFC Bank fixed-width text statement
+  if (content.indexOf("Withdrawal Amt") > -1 && content.indexOf("HDFC BANK") > -1) {
+    var hdfcTxt = parseHDFCBankText(content);
+    if (hdfcTxt.length > 0) return { txns: hdfcTxt, label: "HDFC Bank: " + hdfcTxt.length + " transactions" };
   }
   // 3. Axis Bank CSV (Tran Date,CHQNO,PARTICULARS,DR,CR,BAL,SOL)
   if (content.indexOf("Tran Date") > -1 && content.indexOf("PARTICULARS") > -1 && content.indexOf("UTIB") > -1) {
@@ -1288,7 +1394,7 @@ export default function App() {
             <div style={{ background: th.surface, border: "2px dashed " + th.border, borderRadius: 12, padding: "2rem 1rem", textAlign: "center", marginBottom: "1rem" }}>
               <div style={{ fontSize: 36, marginBottom: 10 }}>📄</div>
               <p style={{ color: th.muted, margin: "0 0 4px", fontSize: 14 }}>Upload your bank or card statement</p>
-              <p style={{ color: "#10b981", margin: "0 0 4px", fontSize: 12 }}>✓ HDFC Bank · HDFC Credit Card · Indian Bank · Axis Bank parsed locally · ✓ Generic CSV/Excel auto-detection</p>
+              <p style={{ color: "#10b981", margin: "0 0 4px", fontSize: 12 }}>✓ HDFC Bank (CSV & Text) · HDFC Credit Card · Indian Bank · Axis Bank parsed locally · ✓ Generic CSV/Excel auto-detection</p>
               <p style={{ color: th.faint, margin: "0 0 14px", fontSize: 12 }}>CSV, TXT supported — no data sent to any server</p>
               <input ref={fileRef} type="file" accept=".csv,.txt,.pdf,.xls,.xlsx" style={{ display: "none" }} onChange={function(e) { if (e.target.files[0]) { setParseError(""); setParseDebug(""); parseStatement(e.target.files[0]); } }} />
               <button onClick={function() { fileRef.current.click(); }} disabled={parsing} style={{ padding: "9px 22px", borderRadius: 8, border: "none", background: parsing ? "#3730a3" : "#6366f1", color: "#fff", cursor: parsing ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 600 }}>
